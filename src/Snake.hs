@@ -229,7 +229,7 @@ gameStep :: MonadRandom m
 gameStep events board | pausePressed                       = return (board & boardPause %~ not)
                       | resetPressed                       = return defaultBoard
                       | board ^. boardPause                = return board
-                      | board ^. boardSnake ^. snakeDead   = return board
+                      | board ^. boardSnake . snakeDead    = return board
                       | otherwise                          = generateNextFrame board newDirection
   where
     keyPressed k = not . null $
@@ -242,7 +242,7 @@ gameStep events board | pausePressed                       = return (board & boa
     pausePressed = keyPressed SDL.KeycodeSpace
     resetPressed = keyPressed SDL.KeycodeR
 
-    newDirection = fromMaybe (board ^. boardSnake ^. snakeDirection) . getLast $
+    newDirection = fromMaybe (board ^. boardSnake . snakeDirection) . getLast $
                        foldMap (\case SDL.KeyboardEvent e
                                         | SDL.keyboardEventKeyMotion e == SDL.Pressed ->
                                             case SDL.keysymKeycode (SDL.keyboardEventKeysym e) of
