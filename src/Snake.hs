@@ -15,6 +15,7 @@ import Linear.Affine
 import Foreign.C.Types
 import Data.StateVar (($=))
 import qualified SDL
+import SDL (Rectangle(..))
 
 import Data.Word (Word8)
 import Data.Array (Array, (!), listArray)
@@ -59,7 +60,7 @@ data Direction
 
 data Snake = Snake
     { _snakeDirection :: Direction
-    , _snakeSegments  :: [(Point V2 CInt, V2 CInt)] -- upper left, size
+    , _snakeSegments  :: [Rectangle CInt]
     , _snakeDead      :: Bool
     } deriving (Show)
 
@@ -71,13 +72,12 @@ data FoodType
 
 data Food = Food
     { _foodType     :: FoodType
-    , _foodPos      :: Point V2 CInt -- upper left
+    , _foodPos      :: Point V2 CInt
     , _foodLifetime :: Int
     } deriving (Show, Eq, Ord)
 
 data Wall = Wall
-    { _wallStart :: Point V2 CInt
-    , _wallSize  :: V2 CInt
+    { _wall :: Rectangle CInt
     } deriving (Show)
 
 data Board = Board
@@ -99,6 +99,10 @@ makeLenses ''Food
 makeLenses ''Wall
 makeLenses ''Board
 makeLenses ''GameState
+
+foodRect :: Food
+         -> Rectangle CInt
+foodRect f = Rectangle (f ^. foodPos) (V2 1 1)
 
 tileSize :: Num a
          => a
@@ -125,16 +129,16 @@ defaultBoard = Board { _boardScore        = 0
                      , _boardPendingScore = 0
                      , _boardPause = False
                      , _boardSnake = Snake { _snakeDirection = DirUp
-                                           , _snakeSegments = [(P $ V2 (boardSize ^. _x `div` 2) (boardSize ^. _y `div` 2), V2 0 1)]
+                                           , _snakeSegments = [Rectangle (P $ V2 (boardSize ^. _x `div` 2) (boardSize ^. _y `div` 2)) (V2 0 1)]
                                            , _snakeDead = False
                                            }
                      , _boardFood  = S.empty
-                     , _boardWalls = [ Wall (P $ V2 0 0) (V2 1 (boardSize ^. _y))
-                                     , Wall (P $ V2 0 0) (V2 (boardSize ^. _x) 1)
-                                     , Wall (P $ V2 (boardSize ^. _x - 1) 0) (V2 1 (boardSize ^. _y))
-                                     , Wall (P $ V2 0 (boardSize ^. _y - 1)) (V2 (boardSize ^. _x) 1)
-                                     , Wall (P $ V2 (boardSize ^. _x `div` 4) (boardSize ^. _y `div` 4)) (V2 1 (boardSize ^. _y - boardSize ^. _y `div` 2))
-                                     , Wall (P $ V2 (boardSize ^. _x - boardSize ^. _x `div` 4) (boardSize ^. _y `div` 4)) (V2 1 (boardSize ^. _y - boardSize ^. _y `div` 2))
+                     , _boardWalls = [ Wall $ Rectangle (P $ V2 0 0) (V2 1 (boardSize ^. _y))
+                                     , Wall $ Rectangle (P $ V2 0 0) (V2 (boardSize ^. _x) 1)
+                                     , Wall $ Rectangle (P $ V2 (boardSize ^. _x - 1) 0) (V2 1 (boardSize ^. _y))
+                                     , Wall $ Rectangle (P $ V2 0 (boardSize ^. _y - 1)) (V2 (boardSize ^. _x) 1)
+                                     , Wall $ Rectangle (P $ V2 (boardSize ^. _x `div` 4) (boardSize ^. _y `div` 4)) (V2 1 (boardSize ^. _y - boardSize ^. _y `div` 2))
+                                     , Wall $ Rectangle (P $ V2 (boardSize ^. _x - boardSize ^. _x `div` 4) (boardSize ^. _y `div` 4)) (V2 1 (boardSize ^. _y - boardSize ^. _y `div` 2))
                                      ]
                      }
 
@@ -143,14 +147,14 @@ class Collidable a b where
              -> b
              -> Bool
 
-instance (Num a, Ord a) => Collidable (Point V2 a, V2 a) (Point V2 a, V2 a) where
+instance (Num a, Ord a) => Collidable (Rectangle a) (Rectangle a) where
     collides = collidesRect
 
 collidesRect :: (Num a, Ord a)
-             => (Point V2 a, V2 a)
-             -> (Point V2 a, V2 a)
+             => Rectangle a
+             -> Rectangle a
              -> Bool
-collidesRect (a, ab) (a', ab')
+collidesRect (Rectangle a ab) (Rectangle a' ab')
      | a ^. _x >= b' ^. _x = False -- second is on the left side of first
      | b ^. _x <= a' ^. _x = False -- second is on the right side of first
      | a ^. _y >= b' ^. _y = False -- second is on the top side of first
@@ -160,20 +164,20 @@ collidesRect (a, ab) (a', ab')
     b  = a  .+^ ab
     b' = a' .+^ ab'
 
-instance Collidable Food (Point V2 CInt, V2 CInt) where
-    collides f = collides (f ^. foodPos, V2 (1 :: CInt) (1 :: CInt))
+instance Collidable Food (Rectangle CInt) where
+    collides f = collides (foodRect f)
 
-instance Collidable (Point V2 CInt, V2 CInt) Food where
+instance Collidable (Rectangle CInt) Food where
     collides = flip collides
 
-instance Collidable Wall (Point V2 CInt, V2 CInt) where
-    collides w = collides (w ^. wallStart, w ^. wallSize)
+instance Collidable Wall (Rectangle CInt) where
+    collides w = collides (w ^. wall)
 
-instance Collidable (Point V2 CInt, V2 CInt) Wall where
+instance Collidable (Rectangle CInt) Wall where
     collides = flip collides
 
 instance Collidable Food Wall where
-    collides f = collides (f ^. foodPos, V2 (1 :: CInt) (1 :: CInt))
+    collides f = collides (foodRect f)
 
 instance Collidable Wall Food where
     collides = flip collides
@@ -195,9 +199,9 @@ directionVector DirDown  = V2   0    1
 moveSnake :: Num a
           => Direction
           -> Direction
-          -> (Point V2 a, V2 a)
-          -> (Point V2 a, V2 a)
-moveSnake oldDirection newDirection oldSegment =
+          -> Rectangle a
+          -> Rectangle a
+moveSnake oldDirection newDirection oldSegment = uncurry Rectangle $
     case (oldDirection, newDirection) of
         -- same direction
         (o       , n       ) | directionVector o ==   directionVector n  -> (a .+^ directionVector n, ab')
@@ -214,9 +218,9 @@ moveSnake oldDirection newDirection oldSegment =
         (DirDown , DirLeft )   -> (b .-^ V2 2 1, ab')
         _                      -> error "unmatched direction change" -- can't happen but the compiler does not know
   where
-    (a, ab) = oldSegment
-    b       = a .+^ ab
-    ab'     = V2 1 1
+    Rectangle a ab = oldSegment
+    b              = a .+^ ab
+    ab'            = V2 1 1
 
 gameStep :: MonadRandom m
          => [SDL.EventPayload]
@@ -380,16 +384,16 @@ renderSnake :: MonadIO m
             -> m ()
 renderSnake renderer snake = do
     SDL.renderDrawColor renderer $= palette ! (if snake ^. snakeDead then 5 else 4)
-    forM_ (snake ^. snakeSegments) $ \(a, b) ->
-        SDL.renderFillRect renderer $ Just $ SDL.Rectangle (a * tileSize) (b * tileSize)
+    forM_ (snake ^. snakeSegments) $
+        SDL.renderFillRect renderer . Just . fmap (* tileSize)
 
 renderWall :: MonadIO m
            => SDL.Renderer
            -> Wall
            -> m ()
-renderWall renderer wall = do
+renderWall renderer w = do
     SDL.renderDrawColor renderer $= palette ! 6
-    SDL.renderFillRect renderer (Just $ SDL.Rectangle (wall ^. wallStart * tileSize) (wall ^. wallSize * tileSize))
+    SDL.renderFillRect renderer . Just . fmap (* tileSize) $ w ^. wall
 
 renderFood :: MonadIO m
            => SDL.Renderer
@@ -400,7 +404,7 @@ renderFood renderer food = do
                                          FoodGreen   -> palette ! 2
                                          FoodOrange  -> palette ! 9
                                          FoodRed     -> palette ! 1
-    SDL.renderFillRect renderer (Just $ SDL.Rectangle (food ^. foodPos * tileSize) (V2 tileSize tileSize))
+    SDL.renderFillRect renderer . Just . fmap (* tileSize) $ foodRect food
 
 renderBoard :: MonadIO m
             => SDL.Renderer
