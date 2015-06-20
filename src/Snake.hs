@@ -1,9 +1,10 @@
-{-# LANGUAGE FlexibleInstances, MultiParamTypeClasses, OverloadedStrings, LambdaCase, TemplateHaskell, RankNTypes #-}
+{-# LANGUAGE FlexibleInstances, FlexibleContexts, MultiParamTypeClasses, OverloadedStrings, LambdaCase, TemplateHaskell, RankNTypes #-}
 
 import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Catch
+import Control.Monad.Reader
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (asyncBound, cancel)
@@ -323,11 +324,11 @@ generateNextFrame board newDirection = do
                    & boardPendingScore .~ max 0 (pendingScore - 1)
 
 
-gameLoop :: (MonadIO m, MonadRandom m, MonadMask m)
-         => GameState
-         -> Integer
+gameLoop :: (MonadIO m, MonadRandom m, MonadMask m, MonadReader GameState m)
+         => Integer
          -> m ()
-gameLoop gameState prevTime = do
+gameLoop prevTime = do
+    gameState <- ask
     -- Get events and replace them by the empty list
     events <- modifyMVar (gameState ^. gameStateEvents) (return . (,) [])
     -- Do one game step
@@ -343,14 +344,14 @@ gameLoop gameState prevTime = do
     when (waitTimeUs > 0) $
         liftIO $ threadDelay waitTimeUs
 
-    gameLoop gameState nextTime
+    gameLoop nextTime
 
 runGameLoop :: GameState
             -> IO ()
 runGameLoop gameState = do
     startTime <- getCurrentMonotonicTime
     gen <- createSystemRandom
-    runRandT (gameLoop gameState startTime) gen
+    runReaderT (runRandT (gameLoop startTime) gen) gameState
 
 class Renderable a where
     render :: MonadIO m
@@ -399,7 +400,6 @@ renderFood renderer food = do
                                          FoodGreen   -> palette ! 2
                                          FoodOrange  -> palette ! 9
                                          FoodRed     -> palette ! 1
-
     SDL.renderFillRect renderer (Just $ SDL.Rectangle (food ^. foodPos * tileSize) (V2 tileSize tileSize))
 
 renderBoard :: MonadIO m
@@ -408,18 +408,19 @@ renderBoard :: MonadIO m
             -> m ()
 renderBoard renderer board = do
     render renderer (board ^. boardSnake)
-    render renderer (board ^. boardWalls)
     render renderer (board ^. boardFood)
+    render renderer (board ^. boardWalls)
 
-runRenderLoop :: SDL.Renderer
-              -> GameState
-              -> IO ()
-runRenderLoop renderer gameState = do
+runRenderLoop :: (MonadIO m, MonadMask m, MonadReader (SDL.Renderer, GameState) m)
+              => m ()
+runRenderLoop = do
     events <- SDL.pollEvents
 
     let eventPayloads = fmap SDL.eventPayload events
         quit = any (\case SDL.QuitEvent -> True
                           _             -> False) eventPayloads
+
+    (renderer, gameState) <- ask
     modifyMVar_ (gameState ^. gameStateEvents) (return . (<> eventPayloads))
 
     SDL.renderDrawColor renderer $= palette ! 8
@@ -430,8 +431,7 @@ runRenderLoop renderer gameState = do
 
     SDL.renderPresent renderer
 
-    unless quit $
-        runRenderLoop renderer gameState
+    unless quit runRenderLoop
 
 main :: IO ()
 main = do
@@ -459,7 +459,7 @@ main = do
                         }
 
     gameThread <- asyncBound $ runGameLoop gameState
-    runRenderLoop renderer gameState
+    runReaderT runRenderLoop (renderer, gameState)
 
     cancel gameThread
 
