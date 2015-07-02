@@ -286,7 +286,7 @@ generateNextFrame board newDirection = do
                                               else if pendingScore > 0 then newSnakeSegments
                                               else                          init newSnakeSegments)
                          & snakeDirection .~ newDirection
-                         & snakeDead         %~ (|| nowDead)
+                         & snakeDead      %~ (|| nowDead)
 
         -- Remove all consumed food, expire food and remove expired food
         prunedFood = S.filter ((> 0) . view foodLifetime)
