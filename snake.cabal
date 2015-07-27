@@ -16,6 +16,9 @@ executable snake
                      , transformers
                      , primitive
                      , exceptions
+                     , deepseq
+                     , deepseq-generics
+                     , nf
                      , containers
                      , vector
                      , array

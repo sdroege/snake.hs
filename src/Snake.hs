@@ -1,10 +1,12 @@
-{-# LANGUAGE FlexibleInstances, FlexibleContexts, MultiParamTypeClasses, OverloadedStrings, LambdaCase, TemplateHaskell, RankNTypes #-}
+{-# LANGUAGE FlexibleInstances, FlexibleContexts, MultiParamTypeClasses, OverloadedStrings, LambdaCase, TemplateHaskell, RankNTypes, DeriveGeneric #-}
 
 import Control.Lens
 import Control.Monad
 import Control.Monad.IO.Class
 import Control.Monad.Catch
 import Control.Monad.Reader
+
+import Control.DeepSeq
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (asyncBound, cancel)
@@ -23,6 +25,9 @@ import Data.Set (Set)
 import qualified Data.Set as S
 import Data.Monoid
 import Data.Maybe
+import Data.NF
+
+import GHC.Generics (Generic)
 
 import Control.Monad.Random
 import Utils
@@ -56,29 +61,39 @@ data Direction
     | DirLeft
     | DirDown
     | DirRight
-    deriving (Show, Eq)
+    deriving (Show, Eq, Generic)
+
+instance NFData Direction
 
 data Snake = Snake
     { _snakeDirection :: Direction
     , _snakeSegments  :: [Rectangle CInt]
     , _snakeDead      :: Bool
-    } deriving (Show)
+    } deriving (Show, Generic)
+
+instance NFData Snake
 
 data FoodType
     = FoodGreen
     | FoodOrange
     | FoodRed
-    deriving (Show, Eq, Ord)
+    deriving (Show, Eq, Ord, Generic)
+
+instance NFData FoodType
 
 data Food = Food
     { _foodType     :: FoodType
     , _foodPos      :: Point V2 CInt
     , _foodLifetime :: Int
-    } deriving (Show, Eq, Ord)
+    } deriving (Show, Eq, Ord, Generic)
+
+instance NFData Food
 
 data Wall = Wall
     { _wall :: Rectangle CInt
-    } deriving (Show)
+    } deriving (Show, Generic)
+
+instance NFData Wall
 
 data Board = Board
     { _boardScore        :: Int
@@ -87,12 +102,18 @@ data Board = Board
     , _boardSnake        :: Snake
     , _boardFood         :: Set Food
     , _boardWalls        :: [Wall]
-    } deriving (Show)
+    } deriving (Show, Generic)
+
+instance NFData Board
 
 data GameState = GameState
-    { _gameStateBoard  :: MVar Board
-    , _gameStateEvents :: MVar [SDL.EventPayload]
+    { _gameStateBoard  :: MVar (NF Board)
+    , _gameStateEvents :: MVar (NF [SDL.Keycode])
     }
+
+-- Orphans
+instance NFData a => NFData (Rectangle a)
+instance NFData SDL.Keycode
 
 makeLenses ''Snake
 makeLenses ''Food
@@ -223,7 +244,7 @@ moveSnake oldDirection newDirection oldSegment = uncurry Rectangle $
     ab'            = V2 1 1
 
 gameStep :: MonadRandom m
-         => [SDL.EventPayload]
+         => [SDL.Keycode]
          -> Board
          -> m Board
 gameStep events board | pausePressed                       = return (board & boardPause %~ not)
@@ -232,26 +253,18 @@ gameStep events board | pausePressed                       = return (board & boa
                       | board ^. boardSnake . snakeDead    = return board
                       | otherwise                          = generateNextFrame board newDirection
   where
-    keyPressed k = not . null $
-                        filter (\case SDL.KeyboardEvent e
-                                        | SDL.keyboardEventKeyMotion e == SDL.Pressed ->
-                                            SDL.keysymKeycode (SDL.keyboardEventKeysym e) == k
-                                      _ -> False)
-                            events
+    keyPressed k = k `elem` events
 
     pausePressed = keyPressed SDL.KeycodeSpace
     resetPressed = keyPressed SDL.KeycodeR
 
     newDirection = fromMaybe (board ^. boardSnake . snakeDirection) . getLast $
-                       foldMap (\case SDL.KeyboardEvent e
-                                        | SDL.keyboardEventKeyMotion e == SDL.Pressed ->
-                                            case SDL.keysymKeycode (SDL.keyboardEventKeysym e) of
-                                                SDL.KeycodeUp    -> Last (Just DirUp)
-                                                SDL.KeycodeDown  -> Last (Just DirDown)
-                                                SDL.KeycodeRight -> Last (Just DirRight)
-                                                SDL.KeycodeLeft  -> Last (Just DirLeft)
-                                                _                -> mempty
-                                      _                                                -> mempty)
+                       foldMap (\case
+                                    SDL.KeycodeUp    -> Last (Just DirUp)
+                                    SDL.KeycodeDown  -> Last (Just DirDown)
+                                    SDL.KeycodeRight -> Last (Just DirRight)
+                                    SDL.KeycodeLeft  -> Last (Just DirLeft)
+                                    _                -> mempty)
                             events
 
 generateNextFrame :: MonadRandom m
@@ -334,9 +347,9 @@ gameLoop :: (MonadIO m, MonadRandom m, MonadMask m, MonadReader GameState m)
 gameLoop prevTime = do
     gameState <- ask
     -- Get events and replace them by the empty list
-    events <- modifyMVar (gameState ^. gameStateEvents) (return . (,) [])
+    events <- modifyMVar (gameState ^. gameStateEvents) (return . (,) (makeNF []) . getNF)
     -- Do one game step
-    modifyMVar_ (gameState ^. gameStateBoard) (gameStep events)
+    modifyMVar_ (gameState ^. gameStateBoard) (fmap makeNF . gameStep events . getNF)
 
     -- Calculate when we should do the next step
     currentTime <- getCurrentMonotonicTime
@@ -423,14 +436,18 @@ runRenderLoop = do
     let eventPayloads = fmap SDL.eventPayload events
         quit = any (\case SDL.QuitEvent -> True
                           _             -> False) eventPayloads
+        keyCodes = mapMaybe (\case SDL.KeyboardEvent e
+                                    | SDL.keyboardEventKeyMotion e == SDL.Pressed
+                                                   -> Just (SDL.keysymKeycode (SDL.keyboardEventKeysym e))
+                                   _               -> Nothing) eventPayloads
 
     (renderer, gameState) <- ask
-    modifyMVar_ (gameState ^. gameStateEvents) (return . (<> eventPayloads))
+    modifyMVar_ (gameState ^. gameStateEvents) (return . makeNF . (<> keyCodes) . getNF)
 
     SDL.renderDrawColor renderer $= palette ! 8
     SDL.renderClear renderer
 
-    board <- readMVar (gameState ^. gameStateBoard)
+    board <- getNF <$> readMVar (gameState ^. gameStateBoard)
     render renderer board
 
     SDL.renderPresent renderer
@@ -454,8 +471,8 @@ main = do
                         { SDL.rendererType = SDL.AcceleratedVSyncRenderer
                         }
 
-    boardMVar <- newMVar defaultBoard
-    eventMVar <- newMVar []
+    boardMVar <- newMVar (makeNF defaultBoard)
+    eventMVar <- newMVar (makeNF [])
 
     let gameState = GameState
                         { _gameStateBoard  = boardMVar
