@@ -396,28 +396,28 @@ renderSnake :: MonadIO m
             -> Snake
             -> m ()
 renderSnake renderer snake = do
-    SDL.renderDrawColor renderer $= palette ! (if snake ^. snakeDead then 5 else 4)
+    SDL.rendererDrawColor renderer $= palette ! (if snake ^. snakeDead then 5 else 4)
     forM_ (snake ^. snakeSegments) $
-        SDL.renderFillRect renderer . Just . fmap (* tileSize)
+        SDL.fillRect renderer . Just . fmap (* tileSize)
 
 renderWall :: MonadIO m
            => SDL.Renderer
            -> Wall
            -> m ()
 renderWall renderer w = do
-    SDL.renderDrawColor renderer $= palette ! 6
-    SDL.renderFillRect renderer . Just . fmap (* tileSize) $ w ^. wall
+    SDL.rendererDrawColor renderer $= palette ! 6
+    SDL.fillRect renderer . Just . fmap (* tileSize) $ w ^. wall
 
 renderFood :: MonadIO m
            => SDL.Renderer
            -> Food
            -> m ()
 renderFood renderer food = do
-    SDL.renderDrawColor renderer $= case food ^. foodType of
+    SDL.rendererDrawColor renderer $= case food ^. foodType of
                                          FoodGreen   -> palette ! 2
                                          FoodOrange  -> palette ! 9
                                          FoodRed     -> palette ! 1
-    SDL.renderFillRect renderer . Just . fmap (* tileSize) $ foodRect food
+    SDL.fillRect renderer . Just . fmap (* tileSize) $ foodRect food
 
 renderBoard :: MonadIO m
             => SDL.Renderer
@@ -444,13 +444,13 @@ runRenderLoop = do
     (renderer, gameState) <- ask
     modifyMVar_ (gameState ^. gameStateEvents) (return . makeNF . (<> keyCodes) . getNF)
 
-    SDL.renderDrawColor renderer $= palette ! 8
-    SDL.renderClear renderer
+    SDL.rendererDrawColor renderer $= palette ! 8
+    SDL.clear renderer
 
     board <- getNF <$> readMVar (gameState ^. gameStateBoard)
     render renderer board
 
-    SDL.renderPresent renderer
+    SDL.present renderer
 
     unless quit runRenderLoop
 
